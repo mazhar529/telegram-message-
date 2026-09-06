@@ -7,19 +7,16 @@ const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Health check
+// Health check endpoint
 app.get("/", (_req, res) => {
   res.json({ ok: true, service: "NexaVoice Telegram Summary" });
 });
 
-// VideoSDK Summary Endpoint
+// Call summary / webhook endpoint
 app.post("/api/call-summary", async (req, res) => {
   try {
     const payload = req.body || {};
 
-    // VideoSDK payloads can differ by configuration/version.
-    // Prefer a summary string if supplied; otherwise serialize the
-    // most useful recognizable fields and let the fallback formatter work.
     const message = buildTelegramMessage(payload);
 
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
@@ -73,7 +70,7 @@ function clean(value) {
 }
 
 function formatDuration(value) {
-  if (value === "-" ) return "-";
+  if (value === "-") return "-";
   if (typeof value === "number") {
     const seconds = Math.max(0, Math.round(value));
     return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -83,51 +80,45 @@ function formatDuration(value) {
 
 function buildTelegramMessage(p) {
   const priority = clean(firstValue(p, [
-    "priority", "summary.priority", "data.priority", "result.priority"
+    "priority", "data.priority", "summary.priority", "variables.priority", "result.priority"
   ]));
 
   const caller = clean(firstValue(p, [
-    "caller_number", "callerNumber", "phoneNumber", "phone",
-    "data.caller_number", "data.callerNumber", "metadata.caller_number"
+    "caller", "caller_number", "callerNumber", "phoneNumber", "phone", "fromPhone",
+    "data.caller", "data.caller_number", "metadata.caller_number", "metadata.fromPhone"
   ]));
 
   const duration = formatDuration(firstValue(p, [
-    "call_duration", "callDuration", "duration",
-    "data.call_duration", "data.callDuration", "metadata.duration"
+    "duration", "call_duration", "callDuration",
+    "data.duration", "data.call_duration", "metadata.duration"
   ]));
 
   const name = clean(firstValue(p, [
-    "customer_name", "customerName", "name",
-    "summary.customer_name", "summary.customerName",
-    "data.customer_name", "data.customerName"
+    "name", "customer_name", "customerName",
+    "summary.customer_name", "variables.name", "data.name"
   ]));
 
   const business = clean(firstValue(p, [
-    "business_name", "businessName", "company", "business",
-    "summary.business_name", "summary.businessName",
-    "data.business_name", "data.businessName"
+    "business", "business_name", "businessName", "company",
+    "summary.business_name", "variables.business", "data.business"
   ]));
 
   const service = clean(firstValue(p, [
-    "service_required", "serviceRequired", "service",
-    "summary.service_required", "summary.serviceRequired",
-    "data.service_required", "data.serviceRequired"
+    "service", "service_required", "serviceRequired",
+    "summary.service_required", "variables.service", "data.service"
   ]));
 
   const budget = clean(firstValue(p, [
-    "budget", "customer_budget",
-    "summary.budget", "data.budget"
+    "budget", "customer_budget", "summary.budget", "variables.budget", "data.budget"
   ]));
 
   const timeline = clean(firstValue(p, [
-    "timeline", "customer_timeline",
-    "summary.timeline", "data.timeline"
+    "timeline", "customer_timeline", "summary.timeline", "variables.timeline", "data.timeline"
   ]));
 
   const summary = clean(firstValue(p, [
-    "call_summary", "summary_text", "summary",
-    "data.call_summary", "data.summary",
-    "result.summary"
+    "summary", "call_summary", "summary_text",
+    "data.call_summary", "data.summary", "result.summary"
   ]));
 
   const finalPriority = ["High", "Medium", "Low"].includes(priority) ? priority : "Low";
