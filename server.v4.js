@@ -7,14 +7,7 @@ const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "nvidia/nemotron-3.5-lightning:free";
-const FREE_MODELS = (process.env.OPENROUTER_FREE_MODELS || [
-  OPENROUTER_MODEL,
-  "google/gemma-4-31b-it:free",
-  "google/gemma-4-26b-a4b-it:free",
-  "nvidia/nemotron-3-super:free",
-  "openrouter/free"
-].join(",")).split(",").map(s => s.trim()).filter(Boolean);
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "google/gemma-4-26b-a4b-it:free";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "nexavoice-webhook", ai: OPENROUTER_MODEL }));
@@ -34,7 +27,7 @@ async function processCall(payload) {
     if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is missing");
 
     const input = extractCallData(payload);
-    console.log("Processing call with OpenRouter free model(s):", FREE_MODELS.join(" -> "));
+    console.log("Processing call with OpenRouter free model:", OPENROUTER_MODEL);
     const lead = await analyzeLead(input);
     const message = buildTelegramMessage(lead, input);
     const telegram = await sendTelegram(message);
@@ -132,70 +125,58 @@ EXISTING SUMMARY: ${input.directSummary}
 TRANSCRIPT:
 ${input.transcript || "(No transcript supplied)"}`;
 
-  let lastError;
-  for (const model of FREE_MODELS) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
-      try {
-        console.log(`Trying free model ${model} (attempt ${attempt}/2)`);
-        const response = await fetch(OPENROUTER_BASE_URL, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": process.env.APP_URL || "https://telegram-message-xcnw.onrender.com",
-            "X-Title": "NexaVoice Lead Telegram"
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: "system", content: "Return only valid JSON. You extract factual sales lead fields and never invent missing information." },
-              { role: "user", content: prompt }
-            ],
-            temperature: 0,
-            max_tokens: 220,
-            response_format: { type: "json_object" },
-            provider: {
-              require_parameters: true,
-              data_collection: "deny",
-              sort: "latency",
-              allow_fallbacks: true
-            }
-          }),
-          signal: controller.signal
-        });
-        const data = await response.json();
-        if (response.ok) {
-          const content = data?.choices?.[0]?.message?.content || "";
-          const parsed = extractJson(content);
-          console.log("Lead analysis succeeded with:", model);
-          return {
-            priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
-            name: clean(parsed.name),
-            business: clean(parsed.business),
-            service: clean(parsed.service),
-            budget: clean(parsed.budget),
-            timeline: clean(parsed.timeline),
-            summary: clean(parsed.summary)
-          };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch(OPENROUTER_BASE_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.APP_URL || "https://telegram-message-xcnw.onrender.com",
+        "X-Title": "NexaVoice Lead Telegram"
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "system", content: "Return only valid JSON. You extract factual sales lead fields and never invent missing information." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0,
+        max_tokens: 300,
+        response_format: { type: "json_object" },
+        provider: {
+          require_parameters: true,
+          data_collection: "deny",
+          sort: "latency",
+          allow_fallbacks: true
         }
-        const errText = JSON.stringify(data);
-        console.error(`OpenRouter ${response.status} from ${model}:`, errText);
-        lastError = new Error(`OpenRouter request failed (${response.status})`);
-        // 429/5xx: short retry, then immediately try the next free model.
-        if (![429, 500, 502, 503, 504].includes(response.status)) throw lastError;
-      } catch (err) {
-        lastError = err;
-        console.error(`Model ${model} attempt ${attempt} failed:`, err?.message || err);
-      } finally {
-        clearTimeout(timeout);
-      }
-      if (attempt < 2) await new Promise(r => setTimeout(r, 400 + Math.floor(Math.random() * 600)));
+      }),
+      signal: controller.signal
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("OpenRouter error:", JSON.stringify(data));
+      throw new Error(`OpenRouter request failed (${response.status})`);
     }
+
+    const content = data?.choices?.[0]?.message?.content || "";
+    const parsed = extractJson(content);
+    return {
+      priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
+      name: clean(parsed.name),
+      business: clean(parsed.business),
+      service: clean(parsed.service),
+      budget: clean(parsed.budget),
+      timeline: clean(parsed.timeline),
+      summary: clean(parsed.summary)
+    };
+  } finally {
+    clearTimeout(timeout);
   }
-  throw lastError || new Error("All OpenRouter free models failed");
 }
+
 function formatDuration(v) {
   if (v === "-" || v === "") return "-";
   if (typeof v === "number" || /^\d+(\.\d+)?$/.test(String(v))) {
