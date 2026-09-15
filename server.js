@@ -6,46 +6,43 @@ app.use(express.json({ limit: "10mb" }));
 const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const LOCAL_MODEL = process.env.LOCAL_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
-let generatorPromise;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "google/gemma-4-26b-a4b-it:free";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-app.get("/health", (_req, res) => res.json({ ok: true, service: "nexavoice-webhook" }));
+app.get("/health", (_req, res) => res.json({ ok: true, service: "nexavoice-webhook", ai: OPENROUTER_MODEL }));
 
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
-    service: "NexaVoice Thinnest AI → Telegram",
-    ai: LOCAL_MODEL,
-    ai_mode: "self-hosted open-source model; no AI API key required"
+    service: "NexaVoice Thinnest AI → OpenRouter → Telegram",
+    ai: OPENROUTER_MODEL,
+    ai_mode: "OpenRouter free model"
   });
 });
 
 async function processCall(payload) {
   try {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-      throw new Error("Telegram environment variables are missing");
-    }
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) throw new Error("Telegram environment variables are missing");
+    if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is missing");
+
     const input = extractCallData(payload);
-    console.log("Processing call in background...");
+    console.log("Processing call with OpenRouter free model:", OPENROUTER_MODEL);
     const lead = await analyzeLead(input);
     const message = buildTelegramMessage(lead, input);
     const telegram = await sendTelegram(message);
     console.log("Telegram message sent:", telegram?.result?.message_id || "unknown");
   } catch (err) {
-    console.error("Background processing error:", err);
+    console.error("Background processing error:", err?.stack || err);
   }
 }
 
 function handleCallEnded(req, res) {
-  // Acknowledge immediately so Thinnest AI does not time out while the local model loads.
   const payload = req.body || {};
   res.status(200).json({ ok: true, accepted: true });
-
-  // Continue after the HTTP response has been sent.
   setImmediate(() => processCall(payload));
 }
 
-// Thinnest AI can POST to either URL. No webhook/API secret is required.
 app.post("/", handleCallEnded);
 app.post("/api/thinnest/call-ended", handleCallEnded);
 
@@ -58,9 +55,7 @@ function clean(v) {
 function findFirst(obj, keys, maxDepth = 8, depth = 0) {
   if (!obj || depth > maxDepth || typeof obj !== "object") return undefined;
   for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && String(obj[key]).trim() !== "") {
-      return obj[key];
-    }
+    if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && String(obj[key]).trim() !== "") return obj[key];
   }
   for (const value of Object.values(obj)) {
     if (value && typeof value === "object") {
@@ -90,30 +85,18 @@ function extractCallData(p) {
   const transcript = [
     ...collectText(p, ["transcript", "conversation", "dialogue", "messages"]),
     ...collectText(p, ["recording_transcript"])
-  ].join("\\n");
+  ].join("\n");
 
   return {
     caller: clean(findFirst(p, ["caller", "caller_number", "callerNumber", "phoneNumber", "phone", "fromPhone", "from", "customer_phone"])),
     duration: clean(findFirst(p, ["duration", "call_duration", "callDuration", "duration_seconds", "durationSeconds"])),
     directSummary: clean(findFirst(p, ["summary", "call_summary", "summary_text"])),
-    transcript: transcript.slice(0, 50000),
-    raw: p
+    transcript: transcript.slice(0, 60000)
   };
 }
 
-async function getGenerator() {
-  if (!generatorPromise) {
-    generatorPromise = (async () => {
-      console.log(`Loading free open-source model: ${LOCAL_MODEL}`);
-      const { pipeline } = await import("@huggingface/transformers");
-      return pipeline("text-generation", LOCAL_MODEL, { dtype: "q8" });
-    })();
-  }
-  return generatorPromise;
-}
-
 function extractJson(text) {
-  const cleaned = text.replace(/```json|```/gi, "").trim();
+  const cleaned = String(text || "").replace(/```json|```/gi, "").trim();
   const first = cleaned.indexOf("{");
   const last = cleaned.lastIndexOf("}");
   if (first === -1 || last <= first) throw new Error("AI returned no JSON");
@@ -121,57 +104,82 @@ function extractJson(text) {
 }
 
 async function analyzeLead(input) {
-  const prompt = `You extract sales lead information from a phone call. Return ONLY valid JSON.
-Rules:
-- Never invent information.
-- If a field was not explicitly stated, use "-".
-- priority must be exactly High, Medium, or Low.
-- High = strong buying intent, urgent need, appointment/quote requested, or clearly qualified.
-- Medium = genuine interest but missing qualification or not ready.
-- Low = weak interest, spam, wrong number, or insufficient evidence.
-- summary must be one short factual sentence.
+  const prompt = `You are a sales-call lead extractor. Analyze the phone call and return ONLY one valid JSON object. Do not use markdown.
 
-JSON keys exactly:
-priority, name, business, service, budget, timeline, summary
+Rules:
+- Never invent facts.
+- If a field is not explicitly stated or strongly supported by the call, use "-".
+- priority must be exactly "High", "Medium", or "Low".
+- High = strong buying intent, urgent need, quote/appointment requested, or clearly qualified.
+- Medium = genuine interest but qualification is incomplete or timing is uncertain.
+- Low = weak interest, spam, wrong number, or insufficient buying evidence.
+- summary must be one concise factual sentence.
+- Keep values short and preserve the caller's wording/currency where possible.
+
+Return exactly these keys:
+{"priority":"High|Medium|Low","name":"-","business":"-","service":"-","budget":"-","timeline":"-","summary":"-"}
 
 CALLER: ${input.caller}
 DURATION: ${input.duration}
 EXISTING SUMMARY: ${input.directSummary}
 TRANSCRIPT:
-${input.transcript || "(No transcript supplied)"}
+${input.transcript || "(No transcript supplied)"}`;
 
-JSON:`;
-
-  const generator = await getGenerator();
-  const output = await generator(prompt, {
-    max_new_tokens: 220,
-    do_sample: false,
-    return_full_text: false
-  });
-
-  const text = output?.[0]?.generated_text || "";
-  let parsed;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
   try {
-    parsed = extractJson(text);
-  } catch (e) {
-    console.error("Local model output:", text);
-    throw new Error("Local AI returned invalid JSON");
-  }
+    const response = await fetch(OPENROUTER_BASE_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.APP_URL || "https://telegram-message-xcnw.onrender.com",
+        "X-Title": "NexaVoice Lead Telegram"
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "system", content: "Return only valid JSON. You extract factual sales lead fields and never invent missing information." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0,
+        max_tokens: 300,
+        response_format: { type: "json_object" },
+        provider: {
+          require_parameters: true,
+          data_collection: "deny",
+          sort: "latency",
+          allow_fallbacks: true
+        }
+      }),
+      signal: controller.signal
+    });
 
-  return {
-    priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
-    name: clean(parsed.name),
-    business: clean(parsed.business),
-    service: clean(parsed.service),
-    budget: clean(parsed.budget),
-    timeline: clean(parsed.timeline),
-    summary: clean(parsed.summary)
-  };
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("OpenRouter error:", JSON.stringify(data));
+      throw new Error(`OpenRouter request failed (${response.status})`);
+    }
+
+    const content = data?.choices?.[0]?.message?.content || "";
+    const parsed = extractJson(content);
+    return {
+      priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
+      name: clean(parsed.name),
+      business: clean(parsed.business),
+      service: clean(parsed.service),
+      budget: clean(parsed.budget),
+      timeline: clean(parsed.timeline),
+      summary: clean(parsed.summary)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function formatDuration(v) {
   if (v === "-" || v === "") return "-";
-  if (typeof v === "number" || /^\\d+(\\.\\d+)?$/.test(String(v))) {
+  if (typeof v === "number" || /^\d+(\.\d+)?$/.test(String(v))) {
     const seconds = Math.max(0, Math.round(Number(v)));
     return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   }
@@ -181,33 +189,15 @@ function formatDuration(v) {
 function buildTelegramMessage(lead, input) {
   const p = lead.priority;
   const icon = p === "High" ? "🔴" : p === "Medium" ? "🟡" : "🟢";
-
-  return `${icon} NexaVoice Call Ended — Priority: ${p}
-
-📞 Caller: ${clean(input.caller)}
-⏱️ Duration: ${formatDuration(input.duration)}
-👤 Name: ${lead.name}
-🏢 Business: ${lead.business}
-🛠️ Service: ${lead.service}
-💰 Budget: ${lead.budget}
-📅 Timeline: ${lead.timeline}
-
-📝 Summary: ${lead.summary}`;
+  return `${icon} NexaVoice Call Ended — Priority: ${p}\n\n📞 Caller: ${clean(input.caller)}\n⏱️ Duration: ${formatDuration(input.duration)}\n👤 Name: ${lead.name}\n🏢 Business: ${lead.business}\n🛠️ Service: ${lead.service}\n💰 Budget: ${lead.budget}\n📅 Timeline: ${lead.timeline}\n\n📝 Summary: ${lead.summary}`;
 }
 
 async function sendTelegram(text) {
-  const response = await fetch(
-    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text
-      })
-    }
-  );
-
+  const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text })
+  });
   const data = await response.json();
   if (!response.ok || !data.ok) {
     console.error("Telegram error:", data);
@@ -216,6 +206,4 @@ async function sendTelegram(text) {
   return data;
 }
 
-app.listen(PORT, () => {
-  console.log(`NexaVoice server listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`NexaVoice server listening on port ${PORT}`));

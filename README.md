@@ -1,22 +1,39 @@
-# NexaVoice Thinnest AI → Telegram (No AI API)
+# NexaVoice Thinnest AI → OpenRouter Free AI → Telegram
 
-Render-ready webhook application. It receives Thinnest AI call data, immediately returns HTTP 200, then processes the lead in the background using a local open-source Hugging Face model via Transformers.js and sends the structured lead to Telegram.
+Render-ready webhook that accepts Thinnest AI call-ended POSTs, immediately returns HTTP 200, then asynchronously extracts lead information with an OpenRouter free model and sends the formatted result to Telegram.
 
-## Required Render environment variables
-- `TELEGRAM_BOT_TOKEN` — your Telegram bot token
-- `TELEGRAM_CHAT_ID` — chat/group/channel ID where notifications should be sent
+## Render environment variables
+
+Required:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `OPENROUTER_API_KEY`
 
 Optional:
-- `LOCAL_MODEL` — defaults to `HuggingFaceTB/SmolLM2-360M-Instruct`
+- `OPENROUTER_MODEL` (default: `google/gemma-4-26b-a4b-it:free`)
+- `APP_URL`
 
-No OpenAI, OpenRouter, Pollinations, Hugging Face API key, Ollama, or webhook secret is required.
+## Webhook
 
-## Thinnest webhook
 Use either:
-- `https://YOUR-RENDER-SERVICE.onrender.com/`
-- `https://YOUR-RENDER-SERVICE.onrender.com/api/thinnest/call-ended`
+- `https://YOUR-APP.onrender.com/`
+- `https://YOUR-APP.onrender.com/api/thinnest/call-ended`
 
-The server acknowledges the webhook immediately and performs AI extraction in the background, avoiding Thinnest timeout while the local model loads.
+The server does not require a webhook secret.
 
-## Health
-GET `/health` returns `{ "ok": true }`.
+## Behavior
+
+1. Thinnest sends the call payload.
+2. Server immediately returns `{ "ok": true, "accepted": true }` so the webhook does not wait for AI.
+3. Background processing extracts caller, duration, summary/transcript.
+4. OpenRouter runs a free open-weight model.
+5. The model returns JSON with priority, name, business, service, budget, timeline, summary.
+6. Server formats the exact Telegram message and sends it to the configured chat.
+
+## Privacy
+
+The request asks OpenRouter to route only to providers whose data-collection policy meets `data_collection: deny`, when such an endpoint is available. If no eligible provider can serve the request, processing fails rather than silently relaxing that setting.
+
+## Notes
+
+Free OpenRouter endpoints are free but rate-limited and their availability can change. The application uses a configurable model so you can switch models without changing the webhook.
