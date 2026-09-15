@@ -1,16 +1,10 @@
 {
-  "name": "nexavoice-telegram-summary",
-  "version": "1.0.0",
+  "name": "nexavoice-thinnest-telegram-ai",
+  "version": "2.0.0",
   "private": true,
-  "description": "VideoSDK call summary webhook to Telegram",
+  "description": "Thinnest AI call webhook -> private/local open-source AI extraction -> Telegram",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.21.2"
-  }
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.21.2" }
 }

@@ -1,46 +1,84 @@
-# NexaVoice → VideoSDK Summary → Telegram
+# NexaVoice / Thinnest AI → Private AI → Telegram
 
-## 1. Deploy to Render
+This version is designed for your flow:
 
-Create a new **Web Service** from this project.
+THINNEST AI CALL → webhook → LOCAL OPEN-SOURCE AI (Ollama) → structured lead data → Telegram bot
 
-Build Command:
+## Why local Ollama
+
+Caller phone numbers, names, business information, budgets and call transcripts can be sensitive. The default setup keeps the extraction model on infrastructure you control instead of sending the call payload to a third-party AI API.
+
+Ollama supports JSON-schema structured outputs, which makes the extraction more reliable than asking a model for free-form text.
+
+## 1. Run Ollama on the same private server
+
+Install Ollama and pull a model. Example:
+
+```bash
+ollama pull gpt-oss:20b
+```
+
+For a smaller machine, choose a smaller compatible open model and set `OLLAMA_MODEL` accordingly.
+
+Make sure Ollama is reachable at:
+
+```text
+http://127.0.0.1:11434
+```
+
+## 2. Install this Node service
+
+```bash
 npm install
-
-Start Command:
 npm start
+```
 
-## 2. Add Render Environment Variables
+## 3. Environment variables
 
-TELEGRAM_BOT_TOKEN = your Telegram bot token
-TELEGRAM_CHAT_ID = your Telegram chat ID
+Copy `.env.example` to `.env` and set:
 
-Do not put the bot token in VideoSDK.
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `THINNEST_WEBHOOK_SECRET`
+- `OLLAMA_URL`
+- `OLLAMA_MODEL`
 
-## 3. VideoSDK Summary Endpoint URL
+Never put the Telegram bot token inside Thinnest AI.
 
-After Render deploys, copy the Render HTTPS URL and add:
+## 4. Thinnest AI endpoint
 
-/api/call-summary
+Configure Thinnest AI to POST the call-ended data to:
 
-Example:
+```text
+https://YOUR-DOMAIN/api/thinnest/call-ended
+```
 
-https://your-service.onrender.com/api/call-summary
+Send this header:
 
-## 4. Test health
+```text
+x-thinnest-webhook-secret: YOUR_SECRET
+```
 
-Open:
+The endpoint accepts the complete JSON payload from Thinnest AI. The local model reads the payload and extracts the fields.
 
-https://your-service.onrender.com/
+## 5. Telegram result
 
-It should return JSON with ok=true.
+The bot sends:
 
-## Important
+🟢 NexaVoice Call Ended — Priority: Low
 
-The exact JSON structure sent by VideoSDK's Summary Endpoint can vary by the VideoSDK configuration/version. This server accepts common field names and forwards the extracted information to Telegram.
+📞 Caller: ...
+⏱️ Duration: ...
+👤 Name: ...
+🏢 Business: ...
+🛠️ Service: ...
+💰 Budget: ...
+📅 Timeline: ...
 
-Before production, send one real/test call and inspect the Render logs. If VideoSDK uses different field names, update buildTelegramMessage() to map those exact fields.
+📝 Summary: ...
 
-## Telegram
+Priority is automatically normalized to High / Medium / Low by the model.
 
-The Telegram bot must be able to send messages to the target chat. For a private chat, start the bot first. For a group/channel, add the bot and use the appropriate chat ID/permissions.
+## Important privacy note
+
+Do not use a random free hosted AI endpoint for caller PII just because it is free. If privacy is important, keep Ollama on the same private server/VPS as this webhook. Pollinations supports open/community models, but its current documentation explicitly says community models run on their owners' infrastructure and request content is sent to that upstream provider. That makes a self-hosted Ollama model the safer default for sensitive lead data.
