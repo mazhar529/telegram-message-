@@ -1,14 +1,22 @@
 # NexaVoice Thinnest AI → Telegram (No AI API)
 
-Plug-and-play Render service. Thinnest AI POSTs call data here. A local open-source Hugging Face model runs inside the Render service to extract lead fields, then the server sends the formatted result to Telegram.
+Render-ready webhook application. It receives Thinnest AI call data, immediately returns HTTP 200, then processes the lead in the background using a local open-source Hugging Face model via Transformers.js and sends the structured lead to Telegram.
 
 ## Required Render environment variables
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
+- `TELEGRAM_BOT_TOKEN` — your Telegram bot token
+- `TELEGRAM_CHAT_ID` — chat/group/channel ID where notifications should be sent
 
-No OpenAI, OpenRouter, Pollinations, Hugging Face API key, Ollama, or other AI API key is required.
+Optional:
+- `LOCAL_MODEL` — defaults to `HuggingFaceTB/SmolLM2-360M-Instruct`
 
-Optional: `LOCAL_MODEL` (default: `HuggingFaceTB/SmolLM2-360M-Instruct`)
+No OpenAI, OpenRouter, Pollinations, Hugging Face API key, Ollama, or webhook secret is required.
 
 ## Thinnest webhook
-Use either `https://YOUR-APP.onrender.com/` or `https://YOUR-APP.onrender.com/api/thinnest/call-ended`. Both accept POST. No webhook secret is required.
+Use either:
+- `https://YOUR-RENDER-SERVICE.onrender.com/`
+- `https://YOUR-RENDER-SERVICE.onrender.com/api/thinnest/call-ended`
+
+The server acknowledges the webhook immediately and performs AI extraction in the background, avoiding Thinnest timeout while the local model loads.
+
+## Health
+GET `/health` returns `{ "ok": true }`.

@@ -9,6 +9,8 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const LOCAL_MODEL = process.env.LOCAL_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
 let generatorPromise;
 
+app.get("/health", (_req, res) => res.json({ ok: true, service: "nexavoice-webhook" }));
+
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
@@ -18,28 +20,29 @@ app.get("/", (_req, res) => {
   });
 });
 
-async function handleCallEnded(req, res) {
+async function processCall(payload) {
   try {
-    const payload = req.body || {};
-
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-      return res.status(500).json({ ok: false, error: "Telegram environment variables are missing" });
+      throw new Error("Telegram environment variables are missing");
     }
-
     const input = extractCallData(payload);
+    console.log("Processing call in background...");
     const lead = await analyzeLead(input);
     const message = buildTelegramMessage(lead, input);
     const telegram = await sendTelegram(message);
-
-    res.status(200).json({
-      ok: true,
-      telegram_message_id: telegram?.result?.message_id || null,
-      lead
-    });
+    console.log("Telegram message sent:", telegram?.result?.message_id || "unknown");
   } catch (err) {
-    console.error("Webhook error:", err);
-    res.status(500).json({ ok: false, error: "Processing failed" });
+    console.error("Background processing error:", err);
   }
+}
+
+function handleCallEnded(req, res) {
+  // Acknowledge immediately so Thinnest AI does not time out while the local model loads.
+  const payload = req.body || {};
+  res.status(200).json({ ok: true, accepted: true });
+
+  // Continue after the HTTP response has been sent.
+  setImmediate(() => processCall(payload));
 }
 
 // Thinnest AI can POST to either URL. No webhook/API secret is required.
