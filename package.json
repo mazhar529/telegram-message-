@@ -1,10 +1,13 @@
 {
-  "name": "nexavoice-thinnest-telegram-ai",
-  "version": "2.0.0",
+  "name": "nexavoice-thinnest-telegram-local-ai",
+  "version": "3.0.0",
   "private": true,
-  "description": "Thinnest AI webhook -> OpenRouter free model -> Telegram lead notification",
+  "description": "Thinnest AI webhook -> local open-source model via Transformers.js -> Telegram",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "engines": { "node": ">=18" },
-  "dependencies": { "express": "^4.21.2" }
+  "dependencies": {
+    "express": "^4.21.2",
+    "@huggingface/transformers": "^3.8.1"
+  }
 }

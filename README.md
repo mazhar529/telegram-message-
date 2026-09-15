@@ -1,39 +1,14 @@
-# NexaVoice — Thinnest AI → Free/Open AI → Telegram
+# NexaVoice Thinnest AI → Telegram (No AI API)
 
-## Render setup
+Plug-and-play Render service. Thinnest AI POSTs call data here. A local open-source Hugging Face model runs inside the Render service to extract lead fields, then the server sends the formatted result to Telegram.
 
-1. Create a Render Web Service from this folder/repository.
-2. Build command: `npm install`
-3. Start command: `npm start`
-4. Add these Environment Variables in Render:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-   - `OPENROUTER_API_KEY`
-   - `OPENROUTER_MODEL` = `openrouter/free`
-   - `WEBHOOK_SECRET` = any long random secret
-5. Deploy.
-6. Copy:
-   `https://YOUR-RENDER-SERVICE.onrender.com/api/thinnest/call-ended`
-7. Put that URL into the Thinnest AI webhook/endpoint.
-8. If Thinnest lets you send a secret/header, send:
-   `x-webhook-secret: YOUR_WEBHOOK_SECRET`
+## Required Render environment variables
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
-The app accepts JSON POST bodies and recursively searches common Thinnest/call payload locations for:
-- caller/phone
-- duration
-- transcript
-- summary
-- name
-- business/company
-- service
-- budget
-- timeline
-- priority
+No OpenAI, OpenRouter, Pollinations, Hugging Face API key, Ollama, or other AI API key is required.
 
-If a transcript is available, the AI extracts the fields into strict JSON. Missing information becomes `-`.
+Optional: `LOCAL_MODEL` (default: `HuggingFaceTB/SmolLM2-360M-Instruct`)
 
-## Important
-
-OpenRouter's `openrouter/free` is free but subject to provider/model availability and rate limits. It is not an unlimited guarantee.
-
-The application itself has no database and no local AI server. The only required external services are Render, OpenRouter, and Telegram.
+## Thinnest webhook
+Use either `https://YOUR-APP.onrender.com/` or `https://YOUR-APP.onrender.com/api/thinnest/call-ended`. Both accept POST. No webhook secret is required.

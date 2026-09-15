@@ -6,39 +6,28 @@ app.use(express.json({ limit: "10mb" }));
 const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const LOCAL_MODEL = process.env.LOCAL_MODEL || "HuggingFaceTB/SmolLM2-360M-Instruct";
+let generatorPromise;
 
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
     service: "NexaVoice Thinnest AI → Telegram",
-    ai: OPENROUTER_MODEL
+    ai: LOCAL_MODEL,
+    ai_mode: "self-hosted open-source model; no AI API key required"
   });
 });
 
-app.post("/api/thinnest/call-ended", async (req, res) => {
+async function handleCallEnded(req, res) {
   try {
-    if (WEBHOOK_SECRET) {
-      const supplied = req.get("x-webhook-secret") || req.get("authorization")?.replace(/^Bearer\\s+/i, "");
-      if (supplied !== WEBHOOK_SECRET) {
-        return res.status(401).json({ ok: false, error: "Unauthorized" });
-      }
-    }
-
     const payload = req.body || {};
 
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
       return res.status(500).json({ ok: false, error: "Telegram environment variables are missing" });
     }
-    if (!OPENROUTER_API_KEY) {
-      return res.status(500).json({ ok: false, error: "OPENROUTER_API_KEY is missing" });
-    }
 
     const input = extractCallData(payload);
     const lead = await analyzeLead(input);
-
     const message = buildTelegramMessage(lead, input);
     const telegram = await sendTelegram(message);
 
@@ -51,7 +40,11 @@ app.post("/api/thinnest/call-ended", async (req, res) => {
     console.error("Webhook error:", err);
     res.status(500).json({ ok: false, error: "Processing failed" });
   }
-});
+}
+
+// Thinnest AI can POST to either URL. No webhook/API secret is required.
+app.post("/", handleCallEnded);
+app.post("/api/thinnest/call-ended", handleCallEnded);
 
 function clean(v) {
   if (v === undefined || v === null) return "-";
@@ -105,76 +98,62 @@ function extractCallData(p) {
   };
 }
 
+async function getGenerator() {
+  if (!generatorPromise) {
+    generatorPromise = (async () => {
+      console.log(`Loading free open-source model: ${LOCAL_MODEL}`);
+      const { pipeline } = await import("@huggingface/transformers");
+      return pipeline("text-generation", LOCAL_MODEL, { dtype: "q8" });
+    })();
+  }
+  return generatorPromise;
+}
+
+function extractJson(text) {
+  const cleaned = text.replace(/```json|```/gi, "").trim();
+  const first = cleaned.indexOf("{");
+  const last = cleaned.lastIndexOf("}");
+  if (first === -1 || last <= first) throw new Error("AI returned no JSON");
+  return JSON.parse(cleaned.slice(first, last + 1));
+}
+
 async function analyzeLead(input) {
-  const schema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      priority: { type: "string", enum: ["High", "Medium", "Low"] },
-      name: { type: "string" },
-      business: { type: "string" },
-      service: { type: "string" },
-      budget: { type: "string" },
-      timeline: { type: "string" },
-      summary: { type: "string" }
-    },
-    required: ["priority", "name", "business", "service", "budget", "timeline", "summary"]
-  };
+  const prompt = `You extract sales lead information from a phone call. Return ONLY valid JSON.
+Rules:
+- Never invent information.
+- If a field was not explicitly stated, use "-".
+- priority must be exactly High, Medium, or Low.
+- High = strong buying intent, urgent need, appointment/quote requested, or clearly qualified.
+- Medium = genuine interest but missing qualification or not ready.
+- Low = weak interest, spam, wrong number, or insufficient evidence.
+- summary must be one short factual sentence.
 
-  const prompt = `You are a lead-extraction assistant for NexaVoice.
-Extract ONLY information explicitly supported by the call data below.
-Never invent, infer a name/business/service/budget/timeline that was not stated.
-Use "-" when information is unavailable.
+JSON keys exactly:
+priority, name, business, service, budget, timeline, summary
 
-Priority rules:
-- High: clear buying intent, urgent timeline, appointment/quote requested, or strong qualified lead.
-- Medium: genuine interest but missing important qualification or not ready yet.
-- Low: weak interest, wrong number, spam, no meaningful lead, or insufficient evidence.
-Be conservative.
+CALLER: ${input.caller}
+DURATION: ${input.duration}
+EXISTING SUMMARY: ${input.directSummary}
+TRANSCRIPT:
+${input.transcript || "(No transcript supplied)"}
 
-Return ONLY the requested JSON structure.
+JSON:`;
 
-CALL DATA:
-Caller: ${input.caller}
-Duration: ${input.duration}
-Existing summary: ${input.directSummary}
-Transcript:
-${input.transcript || "(No transcript supplied)"}`;
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://render.com",
-      "X-Title": "NexaVoice Lead Telegram"
-    },
-    body: JSON.stringify({
-      model: OPENROUTER_MODEL,
-      messages: [
-        { role: "system", content: "Extract structured lead data accurately. Do not hallucinate." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0,
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "lead", strict: true, schema }
-      }
-    })
+  const generator = await getGenerator();
+  const output = await generator(prompt, {
+    max_new_tokens: 220,
+    do_sample: false,
+    return_full_text: false
   });
 
-  const data = await response.json();
-  if (!response.ok) {
-    console.error("OpenRouter error:", data);
-    throw new Error("OpenRouter request failed");
-  }
-
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("AI returned no content");
-
+  const text = output?.[0]?.generated_text || "";
   let parsed;
-  try { parsed = JSON.parse(content); }
-  catch { throw new Error("AI returned invalid JSON"); }
+  try {
+    parsed = extractJson(text);
+  } catch (e) {
+    console.error("Local model output:", text);
+    throw new Error("Local AI returned invalid JSON");
+  }
 
   return {
     priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
