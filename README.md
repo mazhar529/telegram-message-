@@ -1,84 +1,39 @@
-# NexaVoice / Thinnest AI → Private AI → Telegram
+# NexaVoice — Thinnest AI → Free/Open AI → Telegram
 
-This version is designed for your flow:
+## Render setup
 
-THINNEST AI CALL → webhook → LOCAL OPEN-SOURCE AI (Ollama) → structured lead data → Telegram bot
+1. Create a Render Web Service from this folder/repository.
+2. Build command: `npm install`
+3. Start command: `npm start`
+4. Add these Environment Variables in Render:
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+   - `OPENROUTER_API_KEY`
+   - `OPENROUTER_MODEL` = `openrouter/free`
+   - `WEBHOOK_SECRET` = any long random secret
+5. Deploy.
+6. Copy:
+   `https://YOUR-RENDER-SERVICE.onrender.com/api/thinnest/call-ended`
+7. Put that URL into the Thinnest AI webhook/endpoint.
+8. If Thinnest lets you send a secret/header, send:
+   `x-webhook-secret: YOUR_WEBHOOK_SECRET`
 
-## Why local Ollama
+The app accepts JSON POST bodies and recursively searches common Thinnest/call payload locations for:
+- caller/phone
+- duration
+- transcript
+- summary
+- name
+- business/company
+- service
+- budget
+- timeline
+- priority
 
-Caller phone numbers, names, business information, budgets and call transcripts can be sensitive. The default setup keeps the extraction model on infrastructure you control instead of sending the call payload to a third-party AI API.
+If a transcript is available, the AI extracts the fields into strict JSON. Missing information becomes `-`.
 
-Ollama supports JSON-schema structured outputs, which makes the extraction more reliable than asking a model for free-form text.
+## Important
 
-## 1. Run Ollama on the same private server
+OpenRouter's `openrouter/free` is free but subject to provider/model availability and rate limits. It is not an unlimited guarantee.
 
-Install Ollama and pull a model. Example:
-
-```bash
-ollama pull gpt-oss:20b
-```
-
-For a smaller machine, choose a smaller compatible open model and set `OLLAMA_MODEL` accordingly.
-
-Make sure Ollama is reachable at:
-
-```text
-http://127.0.0.1:11434
-```
-
-## 2. Install this Node service
-
-```bash
-npm install
-npm start
-```
-
-## 3. Environment variables
-
-Copy `.env.example` to `.env` and set:
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `THINNEST_WEBHOOK_SECRET`
-- `OLLAMA_URL`
-- `OLLAMA_MODEL`
-
-Never put the Telegram bot token inside Thinnest AI.
-
-## 4. Thinnest AI endpoint
-
-Configure Thinnest AI to POST the call-ended data to:
-
-```text
-https://YOUR-DOMAIN/api/thinnest/call-ended
-```
-
-Send this header:
-
-```text
-x-thinnest-webhook-secret: YOUR_SECRET
-```
-
-The endpoint accepts the complete JSON payload from Thinnest AI. The local model reads the payload and extracts the fields.
-
-## 5. Telegram result
-
-The bot sends:
-
-🟢 NexaVoice Call Ended — Priority: Low
-
-📞 Caller: ...
-⏱️ Duration: ...
-👤 Name: ...
-🏢 Business: ...
-🛠️ Service: ...
-💰 Budget: ...
-📅 Timeline: ...
-
-📝 Summary: ...
-
-Priority is automatically normalized to High / Medium / Low by the model.
-
-## Important privacy note
-
-Do not use a random free hosted AI endpoint for caller PII just because it is free. If privacy is important, keep Ollama on the same private server/VPS as this webhook. Pollinations supports open/community models, but its current documentation explicitly says community models run on their owners' infrastructure and request content is sent to that upstream provider. That makes a self-hosted Ollama model the safer default for sensitive lead data.
+The application itself has no database and no local AI server. The only required external services are Render, OpenRouter, and Telegram.

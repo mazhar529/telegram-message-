@@ -1,114 +1,116 @@
 const express = require("express");
 
 const app = express();
-app.use(express.json({ limit: "4mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const WEBHOOK_SECRET = process.env.THINNEST_WEBHOOK_SECRET;
-const OLLAMA_URL = (process.env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/$/, "");
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gpt-oss:20b";
-const REQUIRE_AI = process.env.REQUIRE_AI !== "false";
-const MAX_AI_INPUT_CHARS = Number(process.env.MAX_AI_INPUT_CHARS || 30000);
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 app.get("/", (_req, res) => {
-  res.json({ ok: true, service: "NexaVoice Thinnest AI -> Telegram", ai: "local Ollama" });
+  res.json({
+    ok: true,
+    service: "NexaVoice Thinnest AI → Telegram",
+    ai: OPENROUTER_MODEL
+  });
 });
 
-// Use this URL in Thinnest AI as its webhook/endpoint:
-// POST https://YOUR-DOMAIN/api/thinnest/call-ended
 app.post("/api/thinnest/call-ended", async (req, res) => {
   try {
-    if (!isAuthorized(req)) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    if (WEBHOOK_SECRET) {
+      const supplied = req.get("x-webhook-secret") || req.get("authorization")?.replace(/^Bearer\\s+/i, "");
+      if (supplied !== WEBHOOK_SECRET) {
+        return res.status(401).json({ ok: false, error: "Unauthorized" });
+      }
     }
 
     const payload = req.body || {};
-    console.log("Received Thinnest AI call-ended webhook");
 
-    const lead = await extractLeadWithLocalAI(payload);
-    const message = buildTelegramMessage(lead);
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      return res.status(500).json({ ok: false, error: "Telegram environment variables are missing" });
+    }
+    if (!OPENROUTER_API_KEY) {
+      return res.status(500).json({ ok: false, error: "OPENROUTER_API_KEY is missing" });
+    }
 
+    const input = extractCallData(payload);
+    const lead = await analyzeLead(input);
+
+    const message = buildTelegramMessage(lead, input);
     const telegram = await sendTelegram(message);
-    return res.status(200).json({
+
+    res.status(200).json({
       ok: true,
       telegram_message_id: telegram?.result?.message_id || null,
       lead
     });
-  } catch (error) {
-    console.error("Webhook error:", error);
-    return res.status(500).json({ ok: false, error: error.message || "Internal server error" });
+  } catch (err) {
+    console.error("Webhook error:", err);
+    res.status(500).json({ ok: false, error: "Processing failed" });
   }
 });
 
-// Backward-compatible endpoint with the old project.
-app.post("/api/call-summary", async (req, res) => {
-  try {
-    if (!isAuthorized(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
-    const lead = await extractLeadWithLocalAI(req.body || {});
-    const telegram = await sendTelegram(buildTelegramMessage(lead));
-    return res.status(200).json({ ok: true, telegram_message_id: telegram?.result?.message_id || null, lead });
-  } catch (error) {
-    console.error("Summary endpoint error:", error);
-    return res.status(500).json({ ok: false, error: error.message || "Internal server error" });
+function clean(v) {
+  if (v === undefined || v === null) return "-";
+  const s = String(v).trim();
+  return s || "-";
+}
+
+function findFirst(obj, keys, maxDepth = 8, depth = 0) {
+  if (!obj || depth > maxDepth || typeof obj !== "object") return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] != null && String(obj[key]).trim() !== "") {
+      return obj[key];
+    }
   }
-});
-
-function isAuthorized(req) {
-  if (!WEBHOOK_SECRET) return true;
-  const supplied = req.get("x-thinnest-webhook-secret") || req.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return supplied === WEBHOOK_SECRET;
-}
-
-function clean(value) {
-  if (value === undefined || value === null || String(value).trim() === "") return "-";
-  return String(value).trim();
-}
-
-function formatDuration(value) {
-  if (value === undefined || value === null || value === "") return "-";
-  if (typeof value === "number" || /^\d+(\.\d+)?$/.test(String(value))) {
-    const seconds = Math.max(0, Math.round(Number(value)));
-    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === "object") {
+      const found = findFirst(value, keys, maxDepth, depth + 1);
+      if (found !== undefined) return found;
+    }
   }
-  return clean(value);
+  return undefined;
 }
 
-function normalizePriority(value) {
-  const p = clean(value).toLowerCase();
-  if (p.includes("high") || p.includes("urgent") || p.includes("hot")) return "High";
-  if (p.includes("medium") || p.includes("warm")) return "Medium";
-  return "Low";
+function collectText(obj, wantedKeys, out = [], depth = 0) {
+  if (!obj || depth > 8) return out;
+  if (Array.isArray(obj)) {
+    for (const x of obj) collectText(x, wantedKeys, out, depth + 1);
+    return out;
+  }
+  if (typeof obj !== "object") return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const lk = k.toLowerCase();
+    if (wantedKeys.some(x => lk.includes(x)) && typeof v === "string" && v.trim()) out.push(v.trim());
+    if (v && typeof v === "object") collectText(v, wantedKeys, out, depth + 1);
+  }
+  return out;
 }
 
-function priorityIcon(priority) {
-  return priority === "High" ? "🔴" : priority === "Medium" ? "🟡" : "🟢";
+function extractCallData(p) {
+  const transcript = [
+    ...collectText(p, ["transcript", "conversation", "dialogue", "messages"]),
+    ...collectText(p, ["recording_transcript"])
+  ].join("\\n");
+
+  return {
+    caller: clean(findFirst(p, ["caller", "caller_number", "callerNumber", "phoneNumber", "phone", "fromPhone", "from", "customer_phone"])),
+    duration: clean(findFirst(p, ["duration", "call_duration", "callDuration", "duration_seconds", "durationSeconds"])),
+    directSummary: clean(findFirst(p, ["summary", "call_summary", "summary_text"])),
+    transcript: transcript.slice(0, 50000),
+    raw: p
+  };
 }
 
-function buildTelegramMessage(lead) {
-  const priority = normalizePriority(lead.priority);
-  return `${priorityIcon(priority)} NexaVoice Call Ended — Priority: ${priority}
-
-📞 Caller: ${clean(lead.caller)}
-⏱️ Duration: ${formatDuration(lead.duration)}
-👤 Name: ${clean(lead.name)}
-🏢 Business: ${clean(lead.business)}
-🛠️ Service: ${clean(lead.service)}
-💰 Budget: ${clean(lead.budget)}
-📅 Timeline: ${clean(lead.timeline)}
-
-📝 Summary: ${clean(lead.summary)}`;
-}
-
-async function extractLeadWithLocalAI(payload) {
-  const source = sanitizeForModel(payload);
+async function analyzeLead(input) {
   const schema = {
     type: "object",
+    additionalProperties: false,
     properties: {
       priority: { type: "string", enum: ["High", "Medium", "Low"] },
-      caller: { type: "string" },
-      duration: { type: "string" },
       name: { type: "string" },
       business: { type: "string" },
       service: { type: "string" },
@@ -116,52 +118,66 @@ async function extractLeadWithLocalAI(payload) {
       timeline: { type: "string" },
       summary: { type: "string" }
     },
-    required: ["priority", "caller", "duration", "name", "business", "service", "budget", "timeline", "summary"]
+    required: ["priority", "name", "business", "service", "budget", "timeline", "summary"]
   };
 
-  const prompt = `You are a lead-data extraction system for a business phone agent.
-Extract ONLY facts present in the supplied Thinnest AI call payload/transcript.
-Never invent or guess missing values. If a field is not available, use "-".
-Priority rules: High = strong buying intent/urgent/ready to proceed; Medium = genuine interest but not ready; Low = weak, unclear, wrong number, spam, or no buying intent.
-Keep summary concise (1-3 sentences). Preserve the caller's stated budget and timeline without inventing currency or dates.
-Return JSON only matching the schema.
+  const prompt = `You are a lead-extraction assistant for NexaVoice.
+Extract ONLY information explicitly supported by the call data below.
+Never invent, infer a name/business/service/budget/timeline that was not stated.
+Use "-" when information is unavailable.
 
-THINNEST AI PAYLOAD:
-${source}`;
+Priority rules:
+- High: clear buying intent, urgent timeline, appointment/quote requested, or strong qualified lead.
+- Medium: genuine interest but missing important qualification or not ready yet.
+- Low: weak interest, wrong number, spam, no meaningful lead, or insufficient evidence.
+Be conservative.
 
-  const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+Return ONLY the requested JSON structure.
+
+CALL DATA:
+Caller: ${input.caller}
+Duration: ${input.duration}
+Existing summary: ${input.directSummary}
+Transcript:
+${input.transcript || "(No transcript supplied)"}`;
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://render.com",
+      "X-Title": "NexaVoice Lead Telegram"
+    },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      stream: false,
-      temperature: 0,
+      model: OPENROUTER_MODEL,
       messages: [
-        { role: "system", content: "You extract structured lead data. Never fabricate personal or business information." },
+        { role: "system", content: "Extract structured lead data accurately. Do not hallucinate." },
         { role: "user", content: prompt }
       ],
-      format: schema
+      temperature: 0,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "lead", strict: true, schema }
+      }
     })
   });
 
+  const data = await response.json();
   if (!response.ok) {
-    const text = await response.text();
-    if (REQUIRE_AI) throw new Error(`Local AI unavailable (${response.status}): ${text.slice(0, 500)}`);
-    return deterministicFallback(payload);
+    console.error("OpenRouter error:", data);
+    throw new Error("OpenRouter request failed");
   }
 
-  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("AI returned no content");
+
   let parsed;
-  try {
-    parsed = JSON.parse(data?.message?.content || "{}");
-  } catch {
-    throw new Error("Local AI returned invalid JSON");
-  }
+  try { parsed = JSON.parse(content); }
+  catch { throw new Error("AI returned invalid JSON"); }
 
   return {
-    priority: normalizePriority(parsed.priority),
-    caller: clean(parsed.caller),
-    duration: clean(parsed.duration),
+    priority: ["High", "Medium", "Low"].includes(parsed.priority) ? parsed.priority : "Low",
     name: clean(parsed.name),
     business: clean(parsed.business),
     service: clean(parsed.service),
@@ -171,54 +187,53 @@ ${source}`;
   };
 }
 
-function sanitizeForModel(payload) {
-  const text = JSON.stringify(payload, null, 2);
-  return text.length > MAX_AI_INPUT_CHARS ? text.slice(0, MAX_AI_INPUT_CHARS) + "\n[TRUNCATED]" : text;
-}
-
-// Only used if REQUIRE_AI=false. It does not use an external AI service.
-function deterministicFallback(p) {
-  const first = (...paths) => {
-    for (const path of paths) {
-      let v = p;
-      for (const key of path.split(".")) v = v == null ? undefined : v[key];
-      if (v !== undefined && v !== null && String(v).trim()) return v;
-    }
-    return "-";
-  };
-  return {
-    priority: normalizePriority(first("priority", "data.priority", "summary.priority")),
-    caller: clean(first("caller", "caller_number", "callerNumber", "phoneNumber", "phone", "data.caller")),
-    duration: formatDuration(first("duration", "call_duration", "callDuration", "data.duration")),
-    name: clean(first("name", "customer_name", "customerName", "data.name")),
-    business: clean(first("business", "business_name", "businessName", "company", "data.business")),
-    service: clean(first("service", "service_required", "serviceRequired", "data.service")),
-    budget: clean(first("budget", "customer_budget", "data.budget")),
-    timeline: clean(first("timeline", "customer_timeline", "data.timeline")),
-    summary: clean(first("summary", "call_summary", "summary_text", "data.call_summary", "data.summary"))
-  };
-}
-
-async function sendTelegram(message) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    throw new Error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID");
+function formatDuration(v) {
+  if (v === "-" || v === "") return "-";
+  if (typeof v === "number" || /^\\d+(\\.\\d+)?$/.test(String(v))) {
+    const seconds = Math.max(0, Math.round(Number(v)));
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   }
+  return clean(v);
+}
 
-  const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message })
-  });
+function buildTelegramMessage(lead, input) {
+  const p = lead.priority;
+  const icon = p === "High" ? "🔴" : p === "Medium" ? "🟡" : "🟢";
+
+  return `${icon} NexaVoice Call Ended — Priority: ${p}
+
+📞 Caller: ${clean(input.caller)}
+⏱️ Duration: ${formatDuration(input.duration)}
+👤 Name: ${lead.name}
+🏢 Business: ${lead.business}
+🛠️ Service: ${lead.service}
+💰 Budget: ${lead.budget}
+📅 Timeline: ${lead.timeline}
+
+📝 Summary: ${lead.summary}`;
+}
+
+async function sendTelegram(text) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text
+      })
+    }
+  );
 
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    throw new Error(`Telegram send failed: ${JSON.stringify(data)}`);
+    console.error("Telegram error:", data);
+    throw new Error("Telegram send failed");
   }
   return data;
 }
 
 app.listen(PORT, () => {
-  console.log(`NexaVoice Thinnest AI -> Telegram listening on port ${PORT}`);
-  console.log(`Webhook: POST /api/thinnest/call-ended`);
-  console.log(`Local AI: ${OLLAMA_URL} / ${OLLAMA_MODEL}`);
+  console.log(`NexaVoice server listening on port ${PORT}`);
 });
