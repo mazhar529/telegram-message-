@@ -1,0 +1,12 @@
+{
+  "caller": "+15551234567",
+  "name": "John",
+  "duration": "02:14",
+  "priority": "High",
+  "business": "Example LLC",
+  "service": "AI receptionist",
+  "budget": "$500",
+  "timeline": "This month",
+  "summary": "Caller wants an AI receptionist and requested a demo.",
+  "transcript": "Hello, I am interested in your AI receptionist service."
+}

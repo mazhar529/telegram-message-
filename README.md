@@ -1,39 +1,105 @@
-# NexaVoice Thinnest AI → OpenRouter Free AI → Telegram
+# RingReady -> Telegram Webhook
 
-Render-ready webhook that accepts Thinnest AI call-ended POSTs, immediately returns HTTP 200, then asynchronously extracts lead information with an OpenRouter free model and sends the formatted result to Telegram.
+A small Flask webhook that receives JSON POST requests from a RingReady AI agent and forwards the call information to Telegram.
 
-## Render environment variables
+## Files
 
-Required:
+- `app.py` - webhook + Telegram forwarding
+- `requirements.txt` - Python dependencies
+- `Procfile` - Render start command
+- `render.yaml` - optional Render Blueprint configuration
+- `.env.example` - environment variable template
+- `.gitignore` - prevents secrets/cache files from being committed
+
+## Run locally
+
+Windows:
+
+```bash
+py -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+set TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+set TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+python app.py
+```
+
+The webhook will be available at:
+
+`http://127.0.0.1:10000/webhook`
+
+## Deploy to Render
+
+1. Put these files in a GitHub repository.
+2. In Render, create a new Web Service from the repository.
+3. Build command:
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Start command:
+
+```bash
+gunicorn --bind 0.0.0.0:$PORT app:app
+```
+
+5. Add Environment Variables:
+
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
-- `OPENROUTER_API_KEY`
 
-Optional:
-- `OPENROUTER_MODEL` (default: `google/gemma-4-26b-a4b-it:free`)
-- `APP_URL`
+6. Deploy.
 
-## Webhook
+Your webhook URL will be:
 
-Use either:
-- `https://YOUR-APP.onrender.com/`
-- `https://YOUR-APP.onrender.com/api/thinnest/call-ended`
+`https://YOUR-RENDER-SERVICE.onrender.com/webhook`
 
-The server does not require a webhook secret.
+## Telegram setup
 
-## Behavior
+1. Open Telegram and message `@BotFather`.
+2. Create a bot with `/newbot`.
+3. Copy the bot token into `TELEGRAM_BOT_TOKEN`.
+4. Start a chat with your bot (or add it to your target group).
+5. Get the target chat ID and put it in `TELEGRAM_CHAT_ID`.
 
-1. Thinnest sends the call payload.
-2. Server immediately returns `{ "ok": true, "accepted": true }` so the webhook does not wait for AI.
-3. Background processing extracts caller, duration, summary/transcript.
-4. OpenRouter runs a free open-weight model.
-5. The model returns JSON with priority, name, business, service, budget, timeline, summary.
-6. Server formats the exact Telegram message and sends it to the configured chat.
+## Test
 
-## Privacy
+After deployment, open:
 
-The request asks OpenRouter to route only to providers whose data-collection policy meets `data_collection: deny`, when such an endpoint is available. If no eligible provider can serve the request, processing fails rather than silently relaxing that setting.
+`https://YOUR-RENDER-SERVICE.onrender.com/health`
 
-## Notes
+You should receive:
 
-Free OpenRouter endpoints are free but rate-limited and their availability can change. The application uses a configurable model so you can switch models without changing the webhook.
+```json
+{"ok":true}
+```
+
+Test the webhook with JSON like:
+
+```json
+{
+  "caller": "+15551234567",
+  "name": "John",
+  "duration": "02:14",
+  "priority": "High",
+  "business": "Example LLC",
+  "service": "AI receptionist",
+  "budget": "$500",
+  "timeline": "This month",
+  "summary": "Caller wants an AI receptionist and requested a demo.",
+  "transcript": "Hello, I am interested in..."
+}
+```
+
+POST it to:
+
+`https://YOUR-RENDER-SERVICE.onrender.com/webhook`
+
+## Important RingReady note
+
+The app accepts several common field names, but RingReady's exact webhook payload may use different names or nesting.
+
+If RingReady sends a different JSON structure, update the field extraction in `app.py` to match RingReady's actual payload.
+
+Do not put your Telegram bot token in `app.py`, GitHub, or the RingReady prompt. Keep it in Render Environment Variables.
